@@ -97,3 +97,10 @@ flowchart TD
 ### Decision 2: Embedded Web GUI vs. Manual File Editing
 * **Choice:** Provide an embedded Web GUI panel for rule management.
 * **Why:** Avoids manual JSON syntax errors and makes rule configuration easier for users.
+
+### Decision 3: Separation of Policy and Mechanism (Standalone Config File)
+* **Choice:** Store all whitelist and blacklist rules in an independent configuration file (`plugin.config.json`) instead of hardcoding them inside executable code.
+* **Why:**
+  1. Prevents code corruption when updating access rules.
+  2. Enables dynamic rule hot-reloading without restarting DSH.
+  3. Creates a clear, isolated target for the anti-tampering lock.
