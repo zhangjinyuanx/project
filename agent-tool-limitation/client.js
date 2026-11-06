@@ -1,10 +1,10 @@
 /**
- * @aegis/dsh-plugin-access-control (Built-in Client UI)
+ * agent-tool-limitation (Built-in Client UI)
  *
  * 插件自带的可视化配置与审计 UI（无需安装任何其他插件，单独安装本插件即可在 DeepSeek Harness 桌面版/网页版顶部栏打开）
  */
 window.__ModuleLoader__.load({
-  id: "@aegis/dsh-plugin-access-control",
+  id: "agent-tool-limitation",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -137,12 +137,12 @@ window.__ModuleLoader__.load({
     `;
 
     async function aclGetState() {
-      const res = await fetch("/aegis-acl-api/state", { cache: "no-store" });
+      const res = await fetch("/agent-tool-limitation-api/state", { cache: "no-store" });
       return res.json();
     }
 
     async function aclPostAction(action, payload = {}) {
-      const res = await fetch("/aegis-acl-api/action", {
+      const res = await fetch("/agent-tool-limitation-api/action", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, ...payload }),
@@ -240,7 +240,7 @@ window.__ModuleLoader__.load({
             h(
               "div",
               { style: { display: "flex", alignItems: "center", gap: "10px", fontWeight: 700, fontSize: "15px" } },
-              h("span", null, "🛡️ 通用命令与参数访问控制插件 (@aegis/dsh-plugin-access-control)"),
+              h("span", null, "🛡️ Agent 工具与参数限制插件 (agent-tool-limitation)"),
               h(
                 "span",
                 {
@@ -558,16 +558,16 @@ window.__ModuleLoader__.load({
         {
           type: "button",
           className: "acl-ui-btn",
-          onClick: () => window.dispatchEvent(new CustomEvent("aegis-acl:open")),
-          title: "打开命令与参数访问控制配置面板",
+          onClick: () => window.dispatchEvent(new CustomEvent("agent-tool-limitation:open")),
+          title: "打开 Agent 工具与参数限制配置面板",
         },
-        "🛡️ 访问控制策略"
+        "🛡️ 工具限制策略"
       );
     }
 
     function mountFloatingLauncher() {
       if (typeof document === "undefined") return;
-      const containerId = "aegis-acl-floating-root";
+      const containerId = "agent-tool-limitation-floating-root";
       if (document.getElementById(containerId)) return;
       const div = document.createElement("div");
       div.id = containerId;
@@ -577,8 +577,8 @@ window.__ModuleLoader__.load({
         const [open, setOpen] = useState(false);
         useEffect(() => {
           const handler = () => setOpen(true);
-          window.addEventListener("aegis-acl:open", handler);
-          return () => window.removeEventListener("aegis-acl:open", handler);
+          window.addEventListener("agent-tool-limitation:open", handler);
+          return () => window.removeEventListener("agent-tool-limitation:open", handler);
         }, []);
 
         return h(
@@ -592,7 +592,7 @@ window.__ModuleLoader__.load({
               className: "acl-ui-btn acl-ui-fab",
               onClick: () => setOpen(true),
             },
-            "🛡️ 访问控制策略"
+            "🛡️ 工具限制策略"
           ),
           open ? h(AccessControlModal, { onClose: () => setOpen(false) }) : null
         );
@@ -615,7 +615,7 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           {
             name: "conversation.session.header.actions",
-            id: "aegis-access-control-header-btn",
+            id: "agent-tool-limitation-header-btn",
             order: 8,
           },
           HeaderTriggerButton
@@ -627,7 +627,7 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           {
             name: "conversation.composer.dock",
-            id: "aegis-access-control-dock-btn",
+            id: "agent-tool-limitation-dock-btn",
             order: 8,
           },
           HeaderTriggerButton

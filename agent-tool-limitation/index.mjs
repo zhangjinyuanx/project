@@ -1,7 +1,7 @@
 /**
- * @aegis/dsh-plugin-access-control
+ * agent-tool-limitation
  *
- * 通用工具/命令与参数白名单访问控制插件（DeepSeek Harness 独立插件）
+ * Agent 工具/命令与参数限制插件（DeepSeek Harness 独立插件）
  *
  * 核心设计：
  * 1. 工具/命令级控制（allowed）：决定某个命令或工具是否允许被调用；
@@ -12,7 +12,7 @@
  * 3. 全局底线防护：可选阻断危险 Shell 拼接符（; | & $() >）与系统高危敏感路径（/etc/shadow, .ssh 等）。
  */
 
-export const name = 'aegis-access-control';
+export const name = 'agent-tool-limitation';
 export const inject = ['tools'];
 
 /**
@@ -135,10 +135,11 @@ export const DEFAULT_ACCESS_POLICY = {
   protectedConfigPaths: [
     'cordis.patch.yml',
     'cordis.yml',
-    'aegis-access-control',
+    'agent-tool-limitation',
     '.dsh/profiles',
+    '/agent-tool-limitation-api',
+    '/agent-tool-limitation-api/action',
     '/aegis-acl-api',
-    '/aegis-api/action',
   ],
 };
 
@@ -678,25 +679,22 @@ export function apply(ctx, config = {}) {
       return body ? JSON.parse(body) : {};
     };
 
-    webCtx.webServer.register({
-      kind: 'prefix',
-      path: '/aegis-acl-api',
-      handler: async (req, res) => {
-        try {
-          const parsedUrl = new URL(req.url ?? '/aegis-acl-api/state', 'http://127.0.0.1');
-          const subPath = parsedUrl.pathname.replace(/^\/aegis-acl-api/, '') || '/state';
+    const apiHandler = async (req, res) => {
+      try {
+        const parsedUrl = new URL(req.url ?? '/agent-tool-limitation-api/state', 'http://127.0.0.1');
+        const subPath = parsedUrl.pathname.replace(/^\/(?:agent-tool-limitation-api|aegis-acl-api)/, '') || '/state';
 
-          if (req.method === 'GET' && subPath === '/state') {
-            return sendJson(res, {
-              ok: true,
-              accessPolicy: runtime.accessPolicy,
-              accessAuditLog: runtime.accessAuditLog || [],
-            });
-          }
+        if (req.method === 'GET' && subPath === '/state') {
+          return sendJson(res, {
+            ok: true,
+            accessPolicy: runtime.accessPolicy,
+            accessAuditLog: runtime.accessAuditLog || [],
+          });
+        }
 
-          if (req.method === 'POST' && subPath === '/action') {
-            const body = await readJson(req);
-            const action = body.action;
+        if (req.method === 'POST' && subPath === '/action') {
+          const body = await readJson(req);
+          const action = body.action;
 
             if (action === 'update_policy') {
               const patch = body.policy || {};
@@ -739,7 +737,17 @@ export function apply(ctx, config = {}) {
         } catch (err) {
           return sendJson(res, { ok: false, message: err.message }, 500);
         }
-      },
+      };
+
+    webCtx.webServer.register({
+      kind: 'prefix',
+      path: '/agent-tool-limitation-api',
+      handler: apiHandler,
+    });
+    webCtx.webServer.register({
+      kind: 'prefix',
+      path: '/aegis-acl-api',
+      handler: apiHandler,
     });
   });
 }

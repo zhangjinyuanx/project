@@ -1,7 +1,7 @@
 {
-  "name": "@aegis/dsh-plugin-access-control",
+  "name": "agent-tool-limitation",
   "version": "0.2.0",
-  "description": "通用命令与参数访问控制插件（自带可视化配置 UI，支持按工具独立开启参数与目标地址白名单）",
+  "description": "Agent 工具与参数限制插件（自带可视化配置 UI，支持工具白名单与敏感文件黑名单防护）",
   "icon": "./icon.svg",
   "type": "module",
   "main": "./index.mjs",

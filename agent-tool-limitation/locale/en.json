@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Command & Argument Access Control",
-    "description": "Guards tool execution with command whitelist/blacklist, dangerous argument regex, shell chaining prevention, and sensitive path protection."
+    "title": "Agent Tool Limitation",
+    "description": "Guards tool execution with tool whitelist/blacklist, dangerous argument regex, shell chaining prevention, and sensitive path protection."
   }
 }
 

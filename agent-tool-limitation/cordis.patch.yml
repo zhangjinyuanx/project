@@ -1,6 +1,6 @@
 - insert:
-    - id: aegis-access-control
-      name: '@aegis/dsh-plugin-access-control'
+    - id: agent-tool-limitation
+      name: 'agent-tool-limitation'
       config:
         enabled: true
         mode: whitelist
