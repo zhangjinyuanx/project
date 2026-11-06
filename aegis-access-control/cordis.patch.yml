@@ -1,0 +1,92 @@
+- insert:
+    - id: aegis-access-control
+      name: '@aegis/dsh-plugin-access-control'
+      config:
+        enabled: true
+        mode: whitelist
+        blockShellChaining: true
+        commandRules:
+          curl:
+            allowed: true
+            argWhitelistEnabled: true
+            allowedArgs:
+              - http://127.0.0.1
+              - http://localhost
+              - 127.0.0.1
+              - localhost
+          web_fetch:
+            allowed: true
+            argWhitelistEnabled: true
+            allowedArgs:
+              - http://127.0.0.1
+              - http://localhost
+              - 127.0.0.1
+              - localhost
+          git:
+            allowed: true
+            argWhitelistEnabled: true
+            allowedArgs:
+              - status
+              - diff
+              - log
+              - branch
+              - show
+          cat:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs:
+              - runs/
+              - ./logs/
+              - docs/
+          read:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs:
+              - runs/
+              - ./logs/
+              - docs/
+          grep:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs:
+              - runs/
+              - ./logs/
+          ls:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          head:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          tail:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          wc:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          jq:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          awk:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          sed:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+          echo:
+            allowed: true
+            argWhitelistEnabled: false
+            allowedArgs: []
+        forbiddenPaths:
+          - /etc/shadow
+          - /etc/passwd
+          - .credentials.yaml
+          - auth.json
+          - .ssh
+          - .env
