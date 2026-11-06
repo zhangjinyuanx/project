@@ -10,12 +10,14 @@
     "./client": "./client.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./plugin.config.json": "./plugin.config.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.mjs",
     "client.js",
     "cordis.patch.yml",
+    "plugin.config.json",
     "locale/*.json",
     "icon.svg"
   ],

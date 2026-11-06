@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /**
  * agent-tool-limitation
  *
@@ -10,7 +14,13 @@
  *      必须命中该命令专属的 allowedArgs 白名单；
  *    - 若某个工具/命令设为 argWhitelistEnabled: false（不开启），则跳过该命令的参数白名单检查，不限制其操作对象。
  * 3. 全局底线防护：可选阻断危险 Shell 拼接符（; | & $() >）与系统高危敏感路径（/etc/shadow, .ssh 等）。
+ * 4. 机制与策略分离（Decision 3）：访问控制规则持久化保存在独立配置文件 plugin.config.json 中，
+ *    支持动态热重载与防自篡改保护。
  */
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+export const CONFIG_FILE_PATH = path.resolve(__dirname, 'plugin.config.json');
 
 export const name = 'agent-tool-limitation';
 export const inject = ['tools'];
@@ -135,6 +145,7 @@ export const DEFAULT_ACCESS_POLICY = {
   protectedConfigPaths: [
     'cordis.patch.yml',
     'cordis.yml',
+    'plugin.config.json',
     'agent-tool-limitation',
     '.dsh/profiles',
     '/agent-tool-limitation-api',
@@ -142,6 +153,44 @@ export const DEFAULT_ACCESS_POLICY = {
     '/aegis-acl-api',
   ],
 };
+
+/**
+ * 从独立配置文件 plugin.config.json 读取策略
+ * 若文件不存在，则自动以默认策略初始化该文件
+ */
+export function loadConfigFile() {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.warn(`[${name}] Failed to load ${CONFIG_FILE_PATH}, falling back to defaults:`, err.message);
+  }
+  saveConfigFile(DEFAULT_ACCESS_POLICY);
+  return DEFAULT_ACCESS_POLICY;
+}
+
+/**
+ * 将策略持久化写回独立配置文件 plugin.config.json
+ */
+export function saveConfigFile(policy = {}) {
+  try {
+    const toSave = {
+      enabled: policy.enabled ?? DEFAULT_ACCESS_POLICY.enabled,
+      mode: policy.mode || DEFAULT_ACCESS_POLICY.mode,
+      blockShellChaining: policy.blockShellChaining ?? DEFAULT_ACCESS_POLICY.blockShellChaining,
+      commandRules: policy.commandRules || DEFAULT_ACCESS_POLICY.commandRules,
+      blockedCommands: policy.blockedCommands || DEFAULT_ACCESS_POLICY.blockedCommands,
+      forbiddenPaths: policy.forbiddenPaths || DEFAULT_ACCESS_POLICY.forbiddenPaths,
+    };
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(toSave, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error(`[${name}] Failed to save config to ${CONFIG_FILE_PATH}:`, err.message);
+    return false;
+  }
+}
 
 // 常见的带参数值的短选项（例如 curl -X POST -H "Accept: */*" 中的 POST 和 Header 值本身不是目标地址对象）
 const VALUE_TAKING_FLAGS = new Set([
@@ -529,10 +578,35 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
 
 export function apply(ctx, config = {}) {
   const runtime = (globalThis.__AEGIS_RUNTIME__ ??= {});
-  runtime.accessPolicy = normalizeAccessPolicy(config);
+  const filePolicy = loadConfigFile();
+  const mergedConfig = { ...filePolicy, ...config };
+  runtime.accessPolicy = normalizeAccessPolicy(mergedConfig);
   runtime.accessAuditLog ??= [];
   runtime.evaluateCommandAccess = (cmd) => evaluateCommandAccess(cmd, runtime.accessPolicy);
   runtime.normalizeAccessPolicy = normalizeAccessPolicy;
+
+  // 热重载机制：监听 plugin.config.json 文件变动并实时生效（无需重启 DSH）
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      let debounceTimer = null;
+      fs.watch(CONFIG_FILE_PATH, (eventType) => {
+        if (eventType === 'change') {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            try {
+              const updated = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf-8'));
+              runtime.accessPolicy = normalizeAccessPolicy(updated);
+              console.log(`[${name}] Hot-reloaded access policy from ${CONFIG_FILE_PATH}`);
+            } catch (err) {
+              console.warn(`[${name}] Hot-reload parse error:`, err.message);
+            }
+          }, 150);
+        }
+      });
+    }
+  } catch (err) {
+    // 某些环境不支持文件监听时平稳忽略
+  }
 
   const recordAudit = (entry) => {
     const row = {
@@ -706,6 +780,13 @@ export function apply(ctx, config = {}) {
                   ...(patch.commandRules || {}),
                 },
               });
+              saveConfigFile(runtime.accessPolicy);
+              return sendJson(res, { ok: true, accessPolicy: runtime.accessPolicy });
+            }
+
+            if (action === 'reload_policy') {
+              const reloaded = loadConfigFile();
+              runtime.accessPolicy = normalizeAccessPolicy(reloaded);
               return sendJson(res, { ok: true, accessPolicy: runtime.accessPolicy });
             }
 
