@@ -1,0 +1,138 @@
+{
+  "enabled": true,
+  "mode": "whitelist",
+  "blockShellChaining": true,
+  "commandRules": {
+    "curl": {
+      "allowed": true,
+      "argWhitelistEnabled": true,
+      "allowedArgs": [
+        "http://127.0.0.1",
+        "http://localhost",
+        "127.0.0.1",
+        "localhost"
+      ],
+      "description": "网络请求工具（开启参数白名单以限制允许访问的目标地址）"
+    },
+    "web_fetch": {
+      "allowed": true,
+      "argWhitelistEnabled": true,
+      "allowedArgs": [
+        "http://127.0.0.1",
+        "http://localhost",
+        "127.0.0.1",
+        "localhost"
+      ],
+      "description": "内置网页抓取工具（限制允许抓取的目标地址）"
+    },
+    "git": {
+      "allowed": true,
+      "argWhitelistEnabled": true,
+      "allowedArgs": [
+        "status",
+        "diff",
+        "log",
+        "branch",
+        "show"
+      ],
+      "description": "代码版本管理（开启参数白名单时仅允许只读子命令，禁止 push --force 等）"
+    },
+    "cat": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [
+        "runs/",
+        "./logs/",
+        "docs/"
+      ],
+      "description": "查看文件内容（开启参数白名单时可限制仅允许读取的目录/文件）"
+    },
+    "read": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [
+        "runs/",
+        "./logs/",
+        "docs/"
+      ],
+      "description": "内置文件读取工具（开启参数白名单时可限制仅允许读取的目录/文件）"
+    },
+    "grep": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [
+        "runs/",
+        "./logs/"
+      ],
+      "description": "文本检索工具"
+    },
+    "head": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "查看文件头部"
+    },
+    "tail": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "查看文件尾部"
+    },
+    "wc": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "行数与字符统计"
+    },
+    "ls": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "列出目录内容"
+    },
+    "jq": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "JSON 解析工具"
+    },
+    "awk": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "文本列处理工具"
+    },
+    "sed": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "流式文本处理工具"
+    },
+    "echo": {
+      "allowed": true,
+      "argWhitelistEnabled": false,
+      "allowedArgs": [],
+      "description": "输出文本"
+    }
+  },
+  "blockedCommands": [
+    "sudo",
+    "su",
+    "rm",
+    "mkfs",
+    "dd",
+    "shutdown",
+    "reboot",
+    "chmod",
+    "chown"
+  ],
+  "forbiddenPaths": [
+    "/etc/shadow",
+    "/etc/passwd",
+    ".credentials.yaml",
+    "auth.json",
+    ".ssh",
+    ".env"
+  ]
+}
+
