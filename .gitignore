@@ -13,3 +13,5 @@ yarn-error.log*
 *.tmp
 *.log
 
+# Coursework docs (kept locally, not tracked in code repo)
+a1/
