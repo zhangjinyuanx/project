@@ -73,3 +73,4 @@ A security and capability control plugin for autonomous AI agents within the Dee
 4. **Dynamic Hot-Reloading Test:**
    - Update an entry in `plugin.config.json` manually or via the GUI.
    - Expected Result: Changes take effect immediately in the runtime cache without requiring a DSH server restart.
+
