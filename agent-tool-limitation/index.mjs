@@ -601,6 +601,51 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
   };
 }
 
+const isRecord = value => value !== null && typeof value === 'object'
+  && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const isStringList = value => Array.isArray(value) && value.every(item => typeof item === 'string');
+
+export function validatePolicyPatch(patch) {
+  const errors = [];
+  if (!isRecord(patch) || !Object.keys(patch).length) {
+    return { valid: false, errors: ['policy must be a non-empty object'] };
+  }
+  if ('mode' in patch && !['whitelist', 'blacklist'].includes(patch.mode)) errors.push('Invalid mode');
+  for (const key of ['enabled', 'blockShellChaining']) {
+    if (key in patch && typeof patch[key] !== 'boolean') errors.push(key + ' must be boolean');
+  }
+  for (const key of ['blockedCommands', 'forbiddenPaths', 'allowedCommands', 'allowedHosts']) {
+    if (key in patch && !isStringList(patch[key])) errors.push(key + ' must be a string array');
+  }
+  if ('commandRules' in patch && !isRecord(patch.commandRules)) {
+    errors.push('commandRules must be an object');
+  } else {
+    for (const [name, rule] of Object.entries(patch.commandRules ?? {})) {
+      if (!name || /[;&|\x60$><\s]/.test(name) || name in Object.prototype) errors.push('Invalid command name: ' + name);
+      if (!isRecord(rule)) {
+        errors.push(name + ' must be an object');
+        continue;
+      }
+      for (const key of ['allowed', 'argWhitelistEnabled']) {
+        if (key in rule && typeof rule[key] !== 'boolean') errors.push(name + '.' + key + ' must be boolean');
+      }
+      if (!('allowedArgs' in rule)) continue;
+      if (!isStringList(rule.allowedArgs)) {
+        errors.push(name + '.allowedArgs must be a string array');
+        continue;
+      }
+      for (const arg of rule.allowedArgs) {
+        const pattern = arg.trim();
+        if (pattern.length > 2 && pattern.startsWith('/') && pattern.endsWith('/')) {
+          try { new RegExp(pattern.slice(1, -1), 'i'); }
+          catch { errors.push(name + ': invalid regular expression ' + pattern); }
+        }
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
 export function apply(ctx, config = {}) {
   const runtime = (globalThis.__AEGIS_RUNTIME__ ??= {});
   const filePolicy = loadConfigFile();
@@ -792,7 +837,11 @@ export function apply(ctx, config = {}) {
           const action = body.action;
 
             if (action === 'update_policy') {
-              const patch = body.policy || {};
+              const patch = body.policy;
+              const { valid, errors } = validatePolicyPatch(patch);
+              if (!valid) return sendJson(res, {
+                ok: false, persisted: false, inMemoryUpdated: false, message: 'Invalid policy payload', errors,
+              }, 400);
               runtime.accessPolicy = normalizeAccessPolicy({
                 ...runtime.accessPolicy,
                 ...patch,
@@ -801,14 +850,23 @@ export function apply(ctx, config = {}) {
                   ...(patch.commandRules || {}),
                 },
               });
-              saveConfigFile(runtime.accessPolicy);
-              return sendJson(res, { ok: true, accessPolicy: runtime.accessPolicy });
+              const persisted = saveConfigFile(runtime.accessPolicy);
+              return sendJson(res, {
+                ok: persisted, persisted, inMemoryUpdated: true, hotReloaded: true,
+                updatedAt: new Date().toISOString(), accessPolicy: runtime.accessPolicy,
+                message: persisted ? 'Policy saved to disk and hot-reloaded'
+                  : 'Policy updated in memory only; failed to persist plugin.config.json',
+              }, persisted ? 200 : 500);
             }
 
             if (action === 'reload_policy') {
               const reloaded = loadConfigFile(runtime.accessPolicy);
+              if (reloaded === runtime.accessPolicy) return sendJson(res, {
+                ok: false, hotReloaded: false, message: 'Reload failed; previous policy retained',
+                accessPolicy: runtime.accessPolicy,
+              }, 500);
               runtime.accessPolicy = normalizeAccessPolicy(reloaded);
-              return sendJson(res, { ok: true, accessPolicy: runtime.accessPolicy });
+              return sendJson(res, { ok: true, hotReloaded: true, updatedAt: new Date().toISOString(), accessPolicy: runtime.accessPolicy });
             }
 
             if (action === 'test_command') {
