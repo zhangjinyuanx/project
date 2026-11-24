@@ -1,0 +1,52 @@
+name: Dual-Platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Node.js Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: [22]
+
+    # 版本与 shell 的坑（本 PR 第一次运行 CI 时真实踩到，记录如下）：
+    #   1. `package.json` 的 test 脚本是 `node --test tests/*.test.mjs`（通配符）。
+    #   2. Node.js 20 的 test runner 只接受「文件 / 目录」参数，不会自己展开 glob。
+    #   3. npm 在 Windows 上固定用 cmd.exe 执行 script，工作流的 shell 设置不会传进去，
+    #      所以 Windows + Node 20 会直接报 "Could not find ...\\tests\\*.test.mjs"。
+    #   → 结论：CI 固定 Node.js 22（LTS，test runner 原生支持 glob），并与本地开发环境一致。
+    #   → 同时统一 shell: bash，避免 PowerShell / cmd 在引号与路径上的行为差异。
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Syntax check core and Web GUI bundles
+        run: |
+          node --check agent-tool-limitation/index.mjs
+          node --check agent-tool-limitation/client.js
+
+      - name: Validate plugin.config.json syntax
+        run: node -e "JSON.parse(require('fs').readFileSync('agent-tool-limitation/plugin.config.json', 'utf8')); console.log('plugin.config.json OK')"
+
+      - name: Run automated test suite
+        working-directory: agent-tool-limitation
+        run: npm test
+
+      - name: Verify tests did not dirty plugin.config.json
+        run: git diff --exit-code agent-tool-limitation/plugin.config.json
