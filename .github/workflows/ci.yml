@@ -1,0 +1,50 @@
+name: Dual-Platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Node.js Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: [20]
+
+    # 两个平台都强制使用 bash，原因（Iteration 2 实测）：
+    #   Node.js 20 的 test runner 只接受「文件 / 目录」参数，不会自己展开 glob；
+    #   而 GitHub 的 Windows runner 默认 shell 是 PowerShell，同样不会展开通配符。
+    #   若直接 `npm test`，Windows 上会收到字面量 `tests/*.test.mjs` 而找不到文件。
+    #   统一用 bash 后，两个平台都先由 shell 展开，npm test 行为完全一致。
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Syntax check core and Web GUI bundles
+        run: |
+          node --check agent-tool-limitation/index.mjs
+          node --check agent-tool-limitation/client.js
+
+      - name: Validate plugin.config.json syntax
+        run: node -e "JSON.parse(require('fs').readFileSync('agent-tool-limitation/plugin.config.json', 'utf8')); console.log('plugin.config.json OK')"
+
+      - name: Run automated test suite
+        working-directory: agent-tool-limitation
+        run: npm test
+
+      - name: Verify tests did not dirty plugin.config.json
+        run: git diff --exit-code agent-tool-limitation/plugin.config.json
