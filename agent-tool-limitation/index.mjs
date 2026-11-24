@@ -474,11 +474,17 @@ export function normalizeExecutableName(rawToken) {
 export function findProtectedTarget(input, forbiddenPaths = DEFAULT_ACCESS_POLICY.forbiddenPaths) {
   const normalize = (value) => String(value ?? '').replace(/\\/g, '/').toLowerCase();
   const target = normalize(input);
+  // Keep the original match fail-closed, and check each path token after
+  // resolving dot segments. Tokenize first so '..' never consumes a command
+  // name or an unrelated argument. Quoted paths may contain spaces.
+  const candidates = [target, ...(target.match(/"[^"]*"|'[^']*'|\S+/g) || [])
+    .map((token) => path.posix.normalize(token.replace(/^(['"])(.*)\1$/, '$2')))];
   for (const [rule, paths] of [
     ['CONFIG_TAMPER_BLOCKED', DEFAULT_ACCESS_POLICY.protectedConfigPaths],
     ['SENSITIVE_PATH_BLOCKED', forbiddenPaths],
   ]) {
-    const matched = paths.find((item) => normalize(item) && target.includes(normalize(item)));
+    const matched = paths.find((item) => normalize(item)
+      && candidates.some((candidate) => candidate.includes(normalize(item))));
     if (matched !== undefined) return { rule, matched };
   }
   return null;
@@ -532,7 +538,8 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
   const mode = policy.mode || 'whitelist';
 
   if (mode === 'blacklist') {
-    const blacklist = new Set(policy.blockedCommands || DEFAULT_ACCESS_POLICY.blockedCommands);
+    const blacklist = new Set((policy.blockedCommands || DEFAULT_ACCESS_POLICY.blockedCommands)
+      .map((command) => normalizeExecutableName(command)));
     if (blacklist.has(bin) || cmdRule?.allowed === false) {
       return {
         allowed: false,
