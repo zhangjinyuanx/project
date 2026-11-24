@@ -239,6 +239,16 @@ describe('[Unit/Component + Acceptance] US-03a: shell command self-protection (E
     });
   });
 
+  it('EX-17b denies dot-segment traversal that hides .dsh/profiles (QA-01 regression)', () => {
+    // Reported in the first QA review round: the literal '.dsh/profiles' was not
+    // a substring of '.dsh/x/../profiles', so the tamper guard was bypassed.
+    assertVerdict('EX-17b', 'cat .dsh/x/../profiles/default.json', {
+      allowed: false,
+      rule: 'CONFIG_TAMPER_BLOCKED',
+      bin: 'cat',
+    });
+  });
+
   it('EX-18 denies a Windows path to an .ssh credential', () => {
     assertVerdict('EX-18', 'cat C:\\Users\\dev\\.ssh\\id_rsa', {
       allowed: false,
@@ -293,6 +303,27 @@ describe('[Integration + Acceptance] US-03b: apply(mockCtx) guard hook boundary 
       result.startsWith(GUARD_DENIED_PREFIX),
       `EX-21: expected a denial starting with "${GUARD_DENIED_PREFIX}", received: ${result}`,
     );
+  });
+
+  it('EX-17b denies the same dot-segment traversal through write and edit (QA-01 regression)', (t) => {
+    const guard = activateGuard(t);
+
+    for (const tool of ['write', 'edit']) {
+      const result = guard({
+        name: tool,
+        arguments: { file_path: '.dsh/x/../profiles/default.json' },
+      });
+
+      assert.equal(
+        typeof result,
+        'string',
+        `EX-17b: ${tool} of a traversed protected path must be denied`,
+      );
+      assert.ok(
+        result.startsWith(GUARD_DENIED_PREFIX),
+        `EX-17b: ${tool} expected a denial starting with "${GUARD_DENIED_PREFIX}", received: ${result}`,
+      );
+    }
   });
 
   it('supplementary control: the guard does not over-block a benign write or bash call', (t) => {
