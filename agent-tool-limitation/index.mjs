@@ -158,17 +158,18 @@ export const DEFAULT_ACCESS_POLICY = {
  * 从独立配置文件 plugin.config.json 读取策略
  * 若文件不存在，则自动以默认策略初始化该文件
  */
-export function loadConfigFile() {
+export function loadConfigFile(fallbackPolicy = DEFAULT_ACCESS_POLICY) {
   try {
-    if (fs.existsSync(CONFIG_FILE_PATH)) {
-      const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
-      return JSON.parse(raw);
+    if (!fs.existsSync(CONFIG_FILE_PATH)) {
+      saveConfigFile(DEFAULT_ACCESS_POLICY);
+      return DEFAULT_ACCESS_POLICY;
     }
+    const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+    return JSON.parse(raw);
   } catch (err) {
-    console.warn(`[${name}] Failed to load ${CONFIG_FILE_PATH}, falling back to defaults:`, err.message);
+    console.warn(`[${name}] Failed to load ${CONFIG_FILE_PATH}, retaining fallback policy:`, err.message);
+    return fallbackPolicy;
   }
-  saveConfigFile(DEFAULT_ACCESS_POLICY);
-  return DEFAULT_ACCESS_POLICY;
 }
 
 /**
@@ -423,7 +424,7 @@ export function checkCommandArgWhitelist(bin, tokens, rawArgs, allowedArgs = [])
     if (!ok) {
       return {
         allowed: false,
-        rule: 'TARGET_ADDR_NOT_IN_WHITELIST',
+        rule: 'ARG_NOT_IN_WHITELIST',
         reason: `访问控制拦截：工具 "${bin}" 已开启参数白名单，目标地址 "${url}" 不在白名单中（仅允许: ${cleanAllowed.join(', ')}）`,
       };
     }
@@ -457,6 +458,39 @@ export function checkCommandArgWhitelist(bin, tokens, rawArgs, allowedArgs = [])
 }
 
 /**
+ * Normalize an executable token without changing its arguments.
+ */
+export function normalizeExecutableName(rawToken) {
+  return String(rawToken ?? '').trim()
+    .replace(/^(['"])(.*)\1$/, '$2')
+    .replace(/^.*[\\/]/, '')
+    .replace(/\.(exe|cmd|bat)$/i, '')
+    .toLowerCase();
+}
+
+/**
+ * Match immutable plugin protection before configurable sensitive paths.
+ */
+export function findProtectedTarget(input, forbiddenPaths = DEFAULT_ACCESS_POLICY.forbiddenPaths) {
+  const normalize = (value) => String(value ?? '').replace(/\\/g, '/').toLowerCase();
+  const target = normalize(input);
+  // Keep the original match fail-closed, and check each path token after
+  // resolving dot segments. Tokenize first so '..' never consumes a command
+  // name or an unrelated argument. Quoted paths may contain spaces.
+  const candidates = [target, ...(target.match(/"[^"]*"|'[^']*'|\S+/g) || [])
+    .map((token) => path.posix.normalize(token.replace(/^(['"])(.*)\1$/, '$2')))];
+  for (const [rule, paths] of [
+    ['CONFIG_TAMPER_BLOCKED', DEFAULT_ACCESS_POLICY.protectedConfigPaths],
+    ['SENSITIVE_PATH_BLOCKED', forbiddenPaths],
+  ]) {
+    const matched = paths.find((item) => normalize(item)
+      && candidates.some((candidate) => candidate.includes(normalize(item))));
+    if (matched !== undefined) return { rule, matched };
+  }
+  return null;
+}
+
+/**
  * 校验单条命令与参数是否符合访问控制策略
  * @param {string} rawCommand 待执行的命令行字符串
  * @param {object} rawPolicy 当前生效的访问控制策略
@@ -474,9 +508,11 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
     };
   }
 
-  const tokens = cmdLine.split(/\s+/);
-  const bin = tokens[0].replace(/^.*\//, '');
-  const rawArgs = cmdLine.slice(tokens[0].length).trim();
+  // The acceptance contract also permits unquoted Windows paths with spaces.
+  const executable = cmdLine.match(/^(?:"[^"]+"|'[^']+'|[a-z]:[\\/][^"'\r\n]*?\.(?:exe|cmd|bat)(?=\s|$)|\S+)/i)?.[0] || '';
+  const rawArgs = cmdLine.slice(executable.length).trim();
+  const tokens = [executable, ...(rawArgs.match(/"[^"]*"|'[^']*'|\S+/g) || [])];
+  const bin = normalizeExecutableName(tokens[0]);
 
   if (!policy.enabled) {
     return {
@@ -502,7 +538,8 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
   const mode = policy.mode || 'whitelist';
 
   if (mode === 'blacklist') {
-    const blacklist = new Set(policy.blockedCommands || DEFAULT_ACCESS_POLICY.blockedCommands);
+    const blacklist = new Set((policy.blockedCommands || DEFAULT_ACCESS_POLICY.blockedCommands)
+      .map((command) => normalizeExecutableName(command)));
     if (blacklist.has(bin) || cmdRule?.allowed === false) {
       return {
         allowed: false,
@@ -526,26 +563,14 @@ export function evaluateCommandAccess(rawCommand, rawPolicy = DEFAULT_ACCESS_POL
   }
 
   // 第 3 关：敏感系统路径与防自篡改（防止 AI 偷偷修改配置文件或调用控制接口给自己提权）
-  for (const protectedItem of DEFAULT_ACCESS_POLICY.protectedConfigPaths) {
-    if (cmdLine.includes(protectedItem)) {
-      return {
-        allowed: false,
-        bin,
-        rule: 'CONFIG_TAMPER_BLOCKED',
-        reason: `访问控制防篡改拦截：严禁智能体访问或修改访问控制插件配置与管理接口 "${protectedItem}"`,
-      };
-    }
-  }
-
-  for (const sensitive of policy.forbiddenPaths || DEFAULT_ACCESS_POLICY.forbiddenPaths) {
-    if (cmdLine.includes(sensitive)) {
-      return {
-        allowed: false,
-        bin,
-        rule: 'SENSITIVE_PATH_BLOCKED',
-        reason: `访问控制拦截：参数试图访问受保护的敏感路径 "${sensitive}"`,
-      };
-    }
+  const protectedTarget = findProtectedTarget(cmdLine, policy.forbiddenPaths);
+  if (protectedTarget) {
+    return {
+      allowed: false,
+      bin,
+      rule: protectedTarget.rule,
+      reason: `访问控制拦截：禁止访问受保护的目标 "${protectedTarget.matched}"`,
+    };
   }
 
   // 第 4 关：按工具独立判断——是否开启了该工具的参数白名单检查（argWhitelistEnabled）
@@ -594,7 +619,7 @@ export function apply(ctx, config = {}) {
           clearTimeout(debounceTimer);
           debounceTimer = setTimeout(() => {
             try {
-              const updated = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf-8'));
+              const updated = loadConfigFile(runtime.accessPolicy);
               runtime.accessPolicy = normalizeAccessPolicy(updated);
               console.log(`[${name}] Hot-reloaded access policy from ${CONFIG_FILE_PATH}`);
             } catch (err) {
@@ -697,23 +722,19 @@ export function apply(ctx, config = {}) {
     // 4. 针对文件写入/编辑工具（write / edit）及插件管理工具（plugin_manager）防止 AI 修改配置文件或卸载本插件
     if ((exec.name === 'write' || exec.name === 'edit') && args.file_path) {
       const filePath = String(args.file_path);
-      for (const protectedItem of [
-        ...DEFAULT_ACCESS_POLICY.protectedConfigPaths,
-        ...(runtime.accessPolicy.forbiddenPaths || []),
-      ]) {
-        if (filePath.includes(protectedItem)) {
-          const reason = `访问控制防篡改拦截：严禁智能体通过 ${exec.name} 工具修改受保护的配置文件或插件源码 "${protectedItem}"`;
-          recordAudit({
-            role,
-            tool: exec.name,
-            command: `${exec.name} ${filePath}`,
-            bin: exec.name,
-            decision: 'DENY',
-            rule: 'CONFIG_TAMPER_BLOCKED',
-            reason,
-          });
-          return `AEGIS_ACCESS_DENIED [CONFIG_TAMPER_BLOCKED]: ${reason}`;
-        }
+      const protectedTarget = findProtectedTarget(filePath, runtime.accessPolicy.forbiddenPaths);
+      if (protectedTarget) {
+        const reason = `访问控制防篡改拦截：严禁智能体通过 ${exec.name} 工具修改受保护的目标 "${protectedTarget.matched}"`;
+        recordAudit({
+          role,
+          tool: exec.name,
+          command: `${exec.name} ${filePath}`,
+          bin: exec.name,
+          decision: 'DENY',
+          rule: protectedTarget.rule,
+          reason,
+        });
+        return `AEGIS_ACCESS_DENIED [${protectedTarget.rule}]: ${reason}`;
       }
     }
 
@@ -785,7 +806,7 @@ export function apply(ctx, config = {}) {
             }
 
             if (action === 'reload_policy') {
-              const reloaded = loadConfigFile();
+              const reloaded = loadConfigFile(runtime.accessPolicy);
               runtime.accessPolicy = normalizeAccessPolicy(reloaded);
               return sendJson(res, { ok: true, accessPolicy: runtime.accessPolicy });
             }
