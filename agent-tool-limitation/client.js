@@ -2,6 +2,12 @@
  * agent-tool-limitation (Built-in Client UI)
  *
  * 插件自带的可视化配置与审计 UI（无需安装任何其他插件，单独安装本插件即可在 DeepSeek Harness 桌面版/网页版顶部栏打开）
+ *
+ * Iteration 2 (PB-03 / PB-04):
+ *  - 前端 Schema/正则校验：命令名合法性、重复添加、非法正则拦截
+ *  - 持久化二态反馈：已持久化并热重载 / 仅内存生效（磁盘写入失败）/ 保存失败
+ *  - 手动热重载按钮 + 最近热重载时间
+ *  - 黑名单命令与防自篡改保护只读摘要卡片
  */
 window.__ModuleLoader__.load({
   id: "agent-tool-limitation",
@@ -12,7 +18,7 @@ window.__ModuleLoader__.load({
 
     const React = require("react");
     const ReactDOM = require("react-dom");
-    const { useState, useEffect, useCallback } = React;
+    const { useState, useEffect, useCallback, useRef } = React;
     const h = React.createElement;
 
     const STYLE_TEXT = `
@@ -73,6 +79,17 @@ window.__ModuleLoader__.load({
         background: #1e293b;
         border-bottom: 1px solid #334155;
       }
+      .acl-ui-statusbar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 16px;
+        padding: 7px 18px;
+        background: #0b1220;
+        border-bottom: 1px solid #334155;
+        font-size: 11px;
+        color: #94a3b8;
+      }
       .acl-ui-body {
         flex: 1;
         overflow-y: auto;
@@ -109,6 +126,10 @@ window.__ModuleLoader__.load({
         padding: 5px 9px;
         font-size: 12px;
       }
+      .acl-ui-input-error {
+        border-color: #ef4444 !important;
+        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+      }
       .acl-ui-smallbtn {
         padding: 4px 10px;
         border-radius: 6px;
@@ -136,6 +157,109 @@ window.__ModuleLoader__.load({
       }
     `;
 
+    // ---------- 常量与纯函数（前端校验 / 只读摘要） ----------
+
+    // 命令名禁止出现的字符：空白符 + Shell 拼接、替换、重定向、变量引用符号
+    const SHELL_META_RE = /[\s;&|`$><]/;
+
+    // 系统级防自篡改锁定目标（与后端 DEFAULT_ACCESS_POLICY.protectedConfigPaths 对齐，仅用于只读展示）
+    const PROTECTED_PATHS_SUMMARY = [
+      "plugin.config.json",
+      "cordis.yml",
+      "cordis.patch.yml",
+      ".dsh/profiles",
+      "/agent-tool-limitation-api",
+    ];
+
+    const TOAST_STYLES = {
+      success: {
+        background: "rgba(16, 185, 129, 0.15)",
+        border: "1px solid rgba(16, 185, 129, 0.4)",
+        color: "#6ee7b7",
+      },
+      warning: {
+        background: "rgba(245, 158, 11, 0.18)",
+        border: "1px solid rgba(245, 158, 11, 0.55)",
+        color: "#fcd34d",
+      },
+      error: {
+        background: "rgba(239, 68, 68, 0.18)",
+        border: "1px solid rgba(239, 68, 68, 0.55)",
+        color: "#fca5a5",
+      },
+    };
+
+    const CHIP_TONES = {
+      red: {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        padding: "2px 7px",
+        borderRadius: "5px",
+        background: "rgba(239, 68, 68, 0.16)",
+        border: "1px solid rgba(239, 68, 68, 0.35)",
+        color: "#fca5a5",
+      },
+      amber: {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        padding: "2px 7px",
+        borderRadius: "5px",
+        background: "rgba(245, 158, 11, 0.16)",
+        border: "1px solid rgba(245, 158, 11, 0.35)",
+        color: "#fcd34d",
+      },
+      blue: {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        padding: "2px 7px",
+        borderRadius: "5px",
+        background: "rgba(56, 189, 248, 0.14)",
+        border: "1px solid rgba(56, 189, 248, 0.35)",
+        color: "#7dd3fc",
+      },
+    };
+
+    const CHIP_ROW_STYLE = {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "6px",
+      marginBottom: "8px",
+    };
+    const CHIP_LABEL_STYLE = {
+      fontSize: "11px",
+      color: "#94a3b8",
+      minWidth: "104px",
+      fontWeight: 600,
+    };
+    const CHIP_EMPTY_STYLE = { fontSize: "11px", color: "#64748b" };
+
+    /**
+     * 预校验「/.../」形式的正则表达式；非正则形式（URL、路径前缀、子命令）一律视为合法。
+     */
+    function isValidRegexPattern(pattern) {
+      const p = String(pattern ?? "").trim();
+      const looksLikeRegex = p.length > 2 && p.startsWith("/") && p.endsWith("/");
+      if (!looksLikeRegex) return true;
+      try {
+        new RegExp(p.slice(1, -1));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function formatClock(value) {
+      if (!value) return "尚未执行";
+      try {
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return String(value);
+        return d.toLocaleTimeString("zh-CN", { hour12: false });
+      } catch {
+        return String(value);
+      }
+    }
+
     async function aclGetState() {
       const res = await fetch("/agent-tool-limitation-api/state", { cache: "no-store" });
       return res.json();
@@ -155,11 +279,18 @@ window.__ModuleLoader__.load({
       const [auditLog, setAuditLog] = useState([]);
       const [newCmd, setNewCmd] = useState("");
       const [testCmd, setTestCmd] = useState("curl -i http://127.0.0.1:18080/api/orders/2001");
-      const [toast, setToast] = useState("");
+      const [toast, setToast] = useState(null);
+      const [lastReloadedAt, setLastReloadedAt] = useState("");
+      const toastSeq = useRef(0);
 
-      const notify = (msg) => {
-        setToast(msg);
-        setTimeout(() => setToast(""), 4000);
+      // 统一提示：success（已持久化）/ warning（仅内存生效）/ error（失败）
+      const notify = (msg, kind = "success") => {
+        const id = toastSeq.current + 1;
+        toastSeq.current = id;
+        setToast({ id, msg, kind });
+        setTimeout(() => {
+          if (toastSeq.current === id) setToast(null);
+        }, 5000);
       };
 
       const refresh = useCallback(async () => {
@@ -168,6 +299,7 @@ window.__ModuleLoader__.load({
           if (json && json.ok) {
             setPolicy(json.accessPolicy || {});
             setAuditLog(json.accessAuditLog || []);
+            if (json.updatedAt) setLastReloadedAt(json.updatedAt);
           }
         } catch {}
       }, []);
@@ -186,13 +318,48 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener("keydown", onKey);
       }, [onClose]);
 
-      const updatePolicy = async (patch) => {
-        const res = await aclPostAction("update_policy", { policy: patch });
-        if (res.ok) {
-          setPolicy(res.accessPolicy);
+      /**
+       * 统一处理保存结果的三种状态（PB-04 二态持久化反馈）：
+       *  1. res.ok && res.persisted !== false  -> 已持久化 + 热重载生效
+       *  2. res.inMemoryUpdated && persisted===false -> 仅内存生效（磁盘写入失败）
+       *  3. 其它 -> 保存失败（校验错误 / 网络异常），不更新界面策略
+       * @returns {Promise<object>} 后端响应对象，供调用方判断是否展示命令级提示
+       */
+      const updatePolicy = async (patch, successNote = "") => {
+        let res;
+        try {
+          res = await aclPostAction("update_policy", { policy: patch });
+        } catch (err) {
+          notify(`❌ 保存失败：网络异常（${err?.message || "请检查后端服务是否在运行"}）`, "error");
+          return { ok: false };
         }
+
+        const persisted = Boolean(res && res.ok && res.persisted !== false);
+        const inMemoryOnly = Boolean(res && res.inMemoryUpdated && res.persisted === false);
+
+        if (persisted) {
+          if (res.accessPolicy) setPolicy(res.accessPolicy);
+          setLastReloadedAt(res.updatedAt || new Date().toISOString());
+          notify(`✅ 策略已持久化并热重载生效（无需重启 DSH）${successNote}`, "success");
+        } else if (inMemoryOnly) {
+          if (res.accessPolicy) setPolicy(res.accessPolicy);
+          setLastReloadedAt(res.updatedAt || new Date().toISOString());
+          notify(
+            `⚠️ 仅内存生效（磁盘写入失败，重启后将回滚）：${res.message || "未知原因"}`,
+            "warning"
+          );
+        } else {
+          const errors = Array.isArray(res?.errors) ? `（${res.errors.join("；")}）` : "";
+          notify(`❌ 保存失败：${res?.message || "请检查配置格式"}${errors}`, "error");
+        }
+
+        return res || { ok: false };
       };
 
+      /**
+       * 更新单条命令规则。
+       * 修复：仅当保存成功（已持久化）时才显示「已更新 [cmd]」，避免失败时误报。
+       */
       const updateCmdRule = async (cmd, rulePatch) => {
         const cur = (policy?.commandRules && policy.commandRules[cmd]) || {
           allowed: true,
@@ -200,31 +367,93 @@ window.__ModuleLoader__.load({
           allowedArgs: [],
         };
         const nextRule = { ...cur, ...rulePatch };
-        await updatePolicy({ commandRules: { [cmd]: nextRule } });
-        notify(
-          `已更新 [${cmd}]: ${nextRule.allowed ? "允许执行" : "禁止执行"} | 参数白名单: ${
-            nextRule.argWhitelistEnabled ? "已开启" : "未开启 (不检查参数)"
-          }`
-        );
+        const summary = `[${cmd}]: ${nextRule.allowed ? "允许执行" : "禁止执行"} | 参数白名单: ${
+          nextRule.argWhitelistEnabled ? "已开启" : "未开启 (不检查参数)"
+        }`;
+        const res = await updatePolicy({ commandRules: { [cmd]: nextRule } }, ` · 已更新 ${summary}`);
+        const persisted = Boolean(res && res.ok && res.persisted !== false);
+        return { persisted, res };
       };
 
       const handleAddCmd = async () => {
-        const c = newCmd.trim();
-        if (!c) return;
-        await updateCmdRule(c, { allowed: true, argWhitelistEnabled: false, allowedArgs: [] });
-        setNewCmd("");
+        const raw = newCmd.trim();
+        if (!raw) {
+          notify("⚠️ 命令名不能为空", "warning");
+          return;
+        }
+        const c = raw.toLowerCase();
+        if (SHELL_META_RE.test(c)) {
+          notify("⚠️ 命令名不合法：不能包含空格或 Shell 特殊符号", "warning");
+          return;
+        }
+        if (policy?.commandRules && Object.prototype.hasOwnProperty.call(policy.commandRules, c)) {
+          notify("⚠️ 命令已存在，请直接在下方列表中编辑", "warning");
+          return;
+        }
+        const { persisted } = await updateCmdRule(c, {
+          allowed: true,
+          argWhitelistEnabled: false,
+          allowedArgs: [],
+        });
+        if (persisted) setNewCmd("");
+      };
+
+      const handleSaveAllowedArgs = async (cmd, rule, inputEl) => {
+        const nextArgs = String(inputEl.value || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        // 前端正则预校验：拦下 /[a-z/ 这类未闭合正则，避免后端静默 fail-closed 导致「全部拒绝」
+        const invalid = nextArgs.find((arg) => !isValidRegexPattern(arg));
+        if (invalid) {
+          inputEl.classList.add("acl-ui-input-error");
+          notify(`⚠️ 非法正则表达式：${invalid}，请修正后再保存（该规则未提交）`, "warning");
+          inputEl.value = (rule.allowedArgs || []).join(", ");
+          return;
+        }
+        inputEl.classList.remove("acl-ui-input-error");
+
+        if (nextArgs.join(",") !== (rule.allowedArgs || []).join(",")) {
+          await updateCmdRule(cmd, { allowedArgs: nextArgs });
+        }
+      };
+
+      const handleHotReload = async () => {
+        try {
+          const res = await aclPostAction("reload_policy");
+          if (res && res.ok && res.accessPolicy) {
+            setPolicy(res.accessPolicy);
+            setLastReloadedAt(res.updatedAt || new Date().toISOString());
+            notify("🔄 已从 plugin.config.json 重新载入策略，热重载生效（无需重启 DSH）", "success");
+            refresh();
+          } else {
+            notify(`❌ 热重载失败：${res?.message || "未知原因"}`, "error");
+          }
+        } catch (err) {
+          notify(`❌ 热重载失败：网络异常（${err?.message || "请检查后端服务是否在运行"}）`, "error");
+        }
       };
 
       const handleTest = async (cmdStr) => {
         const res = await aclPostAction("test_command", { command: cmdStr });
         if (res.ok) {
           const v = res.verdict;
-          notify(`${v.allowed ? "✅ 放行" : "🚫 拦截"} [${v.rule}]: ${v.reason}`);
+          notify(
+            `${v.allowed ? "✅ 放行" : "🚫 拦截"} [${v.rule}]: ${v.reason}`,
+            v.allowed ? "success" : "error"
+          );
           refresh();
         }
       };
 
       const rules = policy?.commandRules || {};
+      const isBlacklistMode = (policy?.mode || "whitelist") === "blacklist";
+      const blockedCommands = Array.isArray(policy?.blockedCommands) ? policy.blockedCommands : [];
+      const forbiddenPaths = Array.isArray(policy?.forbiddenPaths) ? policy.forbiddenPaths : [];
+
+      const chip = (text, tone, key) =>
+        h("code", { key: `${tone}-${text}-${key}`, style: CHIP_TONES[tone] || CHIP_TONES.blue }, text);
 
       return h(
         "div",
@@ -276,6 +505,30 @@ window.__ModuleLoader__.load({
             )
           ),
 
+          // Status bar: 当前模式 + 最近热重载时间 + 手动热重载按钮（PB-04）
+          h(
+            "div",
+            { className: "acl-ui-statusbar" },
+            h(
+              "span",
+              null,
+              `⚙️ 当前模式：${
+                isBlacklistMode ? "黑名单（默认放行，仅拦截列表内命令）" : "白名单（默认拦截，仅放行列表内命令）"
+              }`
+            ),
+            h("span", null, `🔄 最近热重载：${formatClock(lastReloadedAt)}`),
+            h(
+              "button",
+              {
+                className: "acl-ui-smallbtn acl-ui-smallbtn-green",
+                style: { marginLeft: "auto" },
+                onClick: handleHotReload,
+                title: "重新读取 plugin.config.json 并立即生效，无需重启 DSH",
+              },
+              "🔄 热重载策略 (Hot Reload)"
+            )
+          ),
+
           // Body
           h(
             "div",
@@ -288,13 +541,11 @@ window.__ModuleLoader__.load({
                       padding: "8px 12px",
                       marginBottom: "12px",
                       borderRadius: "6px",
-                      background: "rgba(16, 185, 129, 0.15)",
-                      border: "1px solid rgba(16, 185, 129, 0.4)",
-                      color: "#6ee7b7",
                       fontSize: "12px",
+                      ...(TOAST_STYLES[toast.kind] || TOAST_STYLES.success),
                     },
                   },
-                  toast
+                  toast.msg
                 )
               : null,
 
@@ -385,15 +636,7 @@ window.__ModuleLoader__.load({
                               style: { width: "100%", fontFamily: "monospace" },
                               defaultValue: (rule.allowedArgs || []).join(", "),
                               placeholder: "输入允许的目标地址、目录前缀或子命令（如 http://127.0.0.1, http://localhost）",
-                              onBlur: (e) => {
-                                const nextArgs = e.target.value
-                                  .split(",")
-                                  .map((s) => s.trim())
-                                  .filter(Boolean);
-                                if (nextArgs.join(",") !== (rule.allowedArgs || []).join(",")) {
-                                  updateCmdRule(cmd, { allowedArgs: nextArgs });
-                                }
-                              },
+                              onBlur: (e) => handleSaveAllowedArgs(cmd, rule, e.target),
                               onKeyDown: (e) => {
                                 if (e.key === "Enter") e.target.blur();
                               },
@@ -546,6 +789,56 @@ window.__ModuleLoader__.load({
                       )
                     )
                   )
+            ),
+
+            // Section 4: Blacklist & self-protection summary (read-only, PB-03 数据契约可见性)
+            h(
+              "div",
+              { className: "acl-ui-card" },
+              h(
+                "div",
+                { style: { fontWeight: 700, fontSize: "13px", color: "#38bdf8", marginBottom: "4px" } },
+                "4. 🛡️ 黑名单命令 & 防自篡改保护（Self-Protection）"
+              ),
+              h(
+                "div",
+                { style: { fontSize: "11px", color: "#94a3b8", marginBottom: "10px" } },
+                "只读摘要：数据来自 plugin.config.json 与插件内置保护常量，用于说明系统级兜底拦截，不提供 GUI 编辑入口。"
+              ),
+              h(
+                "div",
+                { style: CHIP_ROW_STYLE },
+                h("span", { style: CHIP_LABEL_STYLE }, "🚫 黑名单命令"),
+                blockedCommands.length === 0
+                  ? h("span", { style: CHIP_EMPTY_STYLE }, "（未配置）")
+                  : blockedCommands.map((c, i) => chip(c, "red", i)),
+                isBlacklistMode
+                  ? null
+                  : h(
+                      "span",
+                      { style: { fontSize: "11px", color: "#fbbf24" } },
+                      "⚠️ 当前为白名单模式，该列表不参与判定"
+                    )
+              ),
+              h(
+                "div",
+                { style: CHIP_ROW_STYLE },
+                h("span", { style: CHIP_LABEL_STYLE }, "🔒 受保护敏感路径"),
+                forbiddenPaths.length === 0
+                  ? h("span", { style: CHIP_EMPTY_STYLE }, "（未配置）")
+                  : forbiddenPaths.map((p, i) => chip(p, "amber", i))
+              ),
+              h(
+                "div",
+                { style: CHIP_ROW_STYLE },
+                h("span", { style: CHIP_LABEL_STYLE }, "🛡️ 防自篡改锁定"),
+                PROTECTED_PATHS_SUMMARY.map((p, i) => chip(p, "blue", i)),
+                h(
+                  "span",
+                  { style: { fontSize: "11px", color: "#94a3b8" } },
+                  "智能体通过 bash / write / edit / plugin_manager 触碰上述目标会被系统级拦截"
+                )
+              )
             )
           )
         )
