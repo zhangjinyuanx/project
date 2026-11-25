@@ -19,7 +19,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_ACCESS_POLICY, apply, evaluateCommandAccess } from '../index.mjs';
+import {
+  CONFIG_FILE_PATH,
+  DEFAULT_ACCESS_POLICY,
+  apply,
+  evaluateCommandAccess,
+  validatePolicyPatch,
+} from '../index.mjs';
 
 const BASE_POLICY = structuredClone(DEFAULT_ACCESS_POLICY);
 
@@ -329,6 +335,204 @@ describe('[Integration + Acceptance] Web API surface (/agent-tool-limitation-api
 
     assert.equal(status, 200);
     assert.equal(json.ok, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4) Iteration 2 后端：validatePolicyPatch 单元校验 + 持久化/重载错误路径
+// ---------------------------------------------------------------------------
+
+describe('[Unit + Integration] Iteration 2 policy validation, persistence failure and reload errors (PR #12)', () => {
+  const handlerOf = (captured) => captured.handlers.get('/agent-tool-limitation-api');
+  const postAction = (handler, payload) =>
+    callApi(handler, 'POST', '/agent-tool-limitation-api/action', JSON.stringify(payload));
+
+  // --- Unit: validatePolicyPatch() ---
+
+  it('rejects a non-object or empty patch', () => {
+    for (const bad of [null, undefined, [], 'whitelist', 42, {}]) {
+      const result = validatePolicyPatch(bad);
+      assert.equal(result.valid, false, `${JSON.stringify(bad)} must be rejected`);
+      assert.ok(Array.isArray(result.errors) && result.errors.length > 0, 'a rejection must explain itself');
+    }
+  });
+
+  it('rejects an unknown mode and non-boolean / non-array fields', () => {
+    assert.equal(validatePolicyPatch({ mode: 'allow-all' }).valid, false);
+    assert.equal(validatePolicyPatch({ enabled: 'yes' }).valid, false);
+    assert.equal(validatePolicyPatch({ blockShellChaining: 1 }).valid, false);
+    assert.equal(validatePolicyPatch({ blockedCommands: 'sudo' }).valid, false);
+    assert.equal(validatePolicyPatch({ commandRules: [] }).valid, false);
+  });
+
+  it('rejects command names containing shell metacharacters or whitespace', () => {
+    for (const name of ['git;rm', 'git rm', 'a|b', 'a&&b', '$(id)', '`id`', 'a>b', '$HOME']) {
+      const result = validatePolicyPatch({
+        commandRules: { [name]: { allowed: true, argWhitelistEnabled: false, allowedArgs: [] } },
+      });
+
+      assert.equal(result.valid, false, `command name ${JSON.stringify(name)} must be rejected`);
+      assert.ok(
+        result.errors.some((error) => error.includes('Invalid command name')),
+        `expected an "Invalid command name" error for ${JSON.stringify(name)}, got ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  it('rejects prototype-pollution keys', () => {
+    for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__']) {
+      // JSON.parse is used so that "__proto__" becomes an own enumerable key
+      // instead of mutating the object prototype.
+      const patch = JSON.parse(`{"commandRules":{${JSON.stringify(name)}:{"allowed":true,"allowedArgs":[]}}}`);
+      assert.equal(validatePolicyPatch(patch).valid, false, `${name} must be rejected`);
+    }
+  });
+
+  it('rejects an invalid /.../ regular expression in allowedArgs', () => {
+    const result = validatePolicyPatch({
+      commandRules: { curl: { allowed: true, argWhitelistEnabled: true, allowedArgs: ['/[a-z/'] } },
+    });
+
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((error) => error.includes('invalid regular expression')));
+  });
+
+  it('accepts a valid patch and returns an empty error list', () => {
+    const result = validatePolicyPatch({
+      mode: 'blacklist',
+      blockShellChaining: false,
+      blockedCommands: ['sudo', 'rm'],
+      commandRules: {
+        python3: { allowed: true, argWhitelistEnabled: false, allowedArgs: [] },
+        curl: {
+          allowed: true,
+          argWhitelistEnabled: true,
+          allowedArgs: ['http://127.0.0.1', '/^https?:\\/\\/localhost/'],
+        },
+      },
+    });
+
+    assert.equal(result.valid, true, `expected a valid patch, got: ${JSON.stringify(result.errors)}`);
+    assert.deepEqual(result.errors, []);
+  });
+
+  // --- Integration: /action update_policy & reload_policy ---
+
+  it('returns HTTP 400 for an invalid update_policy patch and never mutates memory', async (t) => {
+    const captured = bootPlugin(t);
+    const runtime = globalThis.__AEGIS_RUNTIME__;
+    const before = structuredClone(runtime.accessPolicy);
+
+    const { status, json } = await postAction(handlerOf(captured), {
+      action: 'update_policy',
+      policy: { mode: 'allow-everything' },
+    });
+
+    assert.equal(status, 400);
+    assert.equal(json.ok, false);
+    assert.equal(json.persisted, false);
+    assert.equal(json.inMemoryUpdated, false);
+    assert.ok(Array.isArray(json.errors) && json.errors.length > 0, 'validation errors must be returned');
+    assert.deepEqual(
+      structuredClone(runtime.accessPolicy),
+      before,
+      'a rejected patch must not pollute the in-memory policy',
+    );
+  });
+
+  it('returns HTTP 500 with in-memory-only state when persisting to disk fails', async (t) => {
+    const captured = bootPlugin(t);
+    const runtime = globalThis.__AEGIS_RUNTIME__;
+    t.mock.method(fs, 'writeFileSync', () => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    const { status, json } = await postAction(handlerOf(captured), {
+      action: 'update_policy',
+      policy: { blockShellChaining: false },
+    });
+
+    assert.equal(status, 500);
+    assert.equal(json.ok, false);
+    assert.equal(json.persisted, false);
+    assert.equal(json.inMemoryUpdated, true);
+    assert.equal(json.hotReloaded, true);
+    assert.equal(runtime.accessPolicy.blockShellChaining, false, 'the policy must still apply in memory');
+
+    // 端到端：/state 也应反映「仅内存生效」后的策略
+    const { json: state } = await callApi(handlerOf(captured), 'GET', '/agent-tool-limitation-api/state');
+    assert.equal(state.accessPolicy.blockShellChaining, false);
+  });
+
+  it('persists a valid patch and hot-reloads it (HTTP 200)', async (t) => {
+    const captured = bootPlugin(t);
+    const runtime = globalThis.__AEGIS_RUNTIME__;
+    const original = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+
+    try {
+      const { status, json } = await postAction(handlerOf(captured), {
+        action: 'update_policy',
+        policy: { blockShellChaining: false },
+      });
+
+      assert.equal(status, 200);
+      assert.equal(json.ok, true);
+      assert.equal(json.persisted, true);
+      assert.equal(json.inMemoryUpdated, true);
+      assert.equal(json.hotReloaded, true);
+      assert.equal(
+        JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf-8')).blockShellChaining,
+        false,
+        'the patch must be written to plugin.config.json',
+      );
+      assert.equal(runtime.accessPolicy.blockShellChaining, false);
+    } finally {
+      fs.writeFileSync(CONFIG_FILE_PATH, original, 'utf-8');
+    }
+  });
+
+  it('returns HTTP 500 and keeps the previous policy when reloading corrupted JSON', async (t) => {
+    const captured = bootPlugin(t);
+    const runtime = globalThis.__AEGIS_RUNTIME__;
+    const retained = runtime.accessPolicy;
+    const original = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+
+    try {
+      fs.writeFileSync(CONFIG_FILE_PATH, '{ broken', 'utf-8');
+
+      const { status, json } = await postAction(handlerOf(captured), { action: 'reload_policy' });
+
+      assert.equal(status, 500);
+      assert.equal(json.ok, false);
+      assert.equal(json.hotReloaded, false);
+      assert.equal(runtime.accessPolicy, retained, 'the previous in-memory policy object must be retained');
+      assert.equal(
+        fs.readFileSync(CONFIG_FILE_PATH, 'utf-8'),
+        '{ broken',
+        'the corrupted file must be preserved for manual recovery',
+      );
+    } finally {
+      fs.writeFileSync(CONFIG_FILE_PATH, original, 'utf-8');
+    }
+  });
+
+  it('reloads a valid config file and reports hotReloaded (HTTP 200)', async (t) => {
+    const captured = bootPlugin(t);
+    const original = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+
+    try {
+      const patched = { ...JSON.parse(original), blockShellChaining: false };
+      fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(patched, null, 2), 'utf-8');
+
+      const { status, json } = await postAction(handlerOf(captured), { action: 'reload_policy' });
+
+      assert.equal(status, 200);
+      assert.equal(json.ok, true);
+      assert.equal(json.hotReloaded, true);
+      assert.equal(json.accessPolicy.blockShellChaining, false);
+    } finally {
+      fs.writeFileSync(CONFIG_FILE_PATH, original, 'utf-8');
+    }
   });
 });
 
