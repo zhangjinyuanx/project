@@ -1,76 +1,114 @@
 # Agent Tool Limitation Plugin for DeepSeek Harness (DSH)
 
-A security and capability control plugin for autonomous AI agents within the DeepSeek Harness (DSH) runtime. It enforces fine-grained access control over agent tool invocations through a default-deny whitelist, a protected-target blacklist, and dynamic configuration hot-reloading.
+A security and capability control plugin for autonomous AI agents within the DeepSeek Harness (DSH) runtime. It enforces fine-grained access control over agent tool invocations through a default-deny command and argument whitelist, a cross-platform self-protection blacklist, dynamic configuration hot-reloading, and an embedded Web GUI.
 
-> **Course:** Contemporary Issues in Software Engineering — Assignment 1  
+> **Course:** Contemporary Issues in Software Engineering — Assignment 2  
 > **Team:** Jinyuan Zhang (25305422), Jiazhuang Liu (25293517), Bochen Zhang (25307703), Cheng Chen (25307667)  
-> **Submission Commit:** `b638857` (Branch: `main`)
+> **Repository:** https://github.com/zhangjinyuanx/project (Branch: `main`)
 
 ---
 
-## 1. Project Overview
+## 1. Key Capabilities
 
-- **Core Engine:** Intercepts agent tool execution (such as `bash` / `run_command` and file operations) via DSH's native `ctx.tools.guard` hook.
-- **Dual-Layer Validation:**
-  - **Target Blacklist:** Protects sensitive system paths and the plugin's own configuration (`plugin.config.json`) from agent tampering.
-  - **Tool & Arg Whitelist:** Restricts allowed commands and arguments according to defined policies.
-- **Dynamic Hot-Reloading:** Watchers reload access rules into memory cache upon configuration changes without restarting DSH.
+- **Core Interception Hook (`index.mjs`):** Intercepts `bash`, `web_fetch`, `read`, `write`, `edit`, and `plugin_manager` dispatches via `ctx.tools.guard`.
+- **Cross-Platform Path & Binary Guard:**
+  - `normalizeExecutableName(rawToken)`: Normalizes quoted/unquoted Unix (`/`) and Windows (`\`) paths and strips `.exe`/`.cmd`/`.bat` suffixes before whitelist/blacklist evaluation.
+  - `findProtectedTarget(input, forbiddenPaths)`: Applies dot-segment resolution (`path.posix.normalize`) and case-insensitive separator normalization (`CONFIG_TAMPER_BLOCKED` before `SENSITIVE_PATH_BLOCKED`) to stop agents tampering with `plugin.config.json`, plugin sources, or `.dsh/profiles`.
+- **Non-Destructive Fail-Safe Config & Schema Validation:**
+  - `loadConfigFile(fallbackPolicy)` preserves malformed `plugin.config.json` files on disk and retains the active fallback/last-known-good policy in memory.
+  - `validatePolicyPatch(patch)` validates `mode`, command names (rejecting whitespace, shell metacharacters, and prototype keys), and `/.../` regular expressions before mutating memory or disk (`HTTP 400` on invalid input; `HTTP 500` with `inMemoryUpdated: true, persisted: false` on write failure).
+- **Embedded Web GUI (`client.js`):** Visual rule editor with client-side command/regex validation, three-state persistence feedback (persisted vs. memory-only warning vs. error), a manual Hot Reload button with timestamp, and a read-only blacklist/self-protection summary card.
 
 ---
 
 ## 2. Directory Structure
 
 ```text
-├── agent-tool-limitation/        # Plugin source directory
-│   ├── client.js                 # Web GUI client-side bundle
-│   ├── cordis.patch.yml          # Cordis framework patch configuration
-│   ├── index.mjs                 # Core plugin entry & interception guard hook
-│   ├── package.json              # Plugin manifest and DSH extension declaration
-│   ├── plugin.config.json        # Access control policy configuration
-│   └── locale/                   # i18n localization resources
-├── .gitignore                    # Git ignore file
-└── README.md                     # Project documentation & setup instructions
+├── .github/
+│   ├── pull_request_template.md              # Standardized PR verification checklist
+│   └── workflows/ci.yml                      # Dual-platform CI (ubuntu-latest & windows-latest, Node 22)
+├── agent-tool-limitation/                    # Plugin package directory
+│   ├── client.js                             # Embedded React Web GUI client bundle
+│   ├── cordis.patch.yml                      # Cordis framework patch configuration
+│   ├── index.mjs                             # Core interception engine, config loader & Web API
+│   ├── package.json                          # Plugin manifest and zero-dependency `npm test` script
+│   ├── plugin.config.json                    # Standalone access control policy configuration
+│   ├── locale/                               # Localization resources
+│   └── tests/                                # Zero-dependency Node.js test suites (100 tests total)
+│       ├── acceptance-iter1.test.mjs         # EX-01–EX-23 + EX-17b regression acceptance suite (27 tests)
+│       ├── security-and-perf.test.mjs        # Adversarial security, performance & Web API suite (63 tests)
+│       └── ui-contract.test.mjs              # Web GUI VM/hooks validation & toast contract suite (10 tests)
+├── docs/                                     # Process & requirements traceability documentation
+│   ├── user-story-map.md                     # User Story Map across Iteration 1 and Iteration 2
+│   ├── iter1-requirements-by-example.md      # Specification by Example baseline (EX-01–EX-23)
+│   ├── iter1-review-and-retrospective.md     # Iteration 1 metrics & retrospective
+│   └── iter2-review-and-retrospective.md     # Iteration 2 metrics, Iter 1 vs Iter 2 comparison & retro
+├── .gitignore
+└── README.md
 ```
 
 ---
 
-## 3. Setup and Installation
+## 3. Prerequisites & Reproducible Setup
 
 ### Prerequisites
-- Node.js (v18 or later)
-- DeepSeek Harness (`@deepseek-ai/dsh`) environment
+- **Node.js v22 or later (v22 LTS / v24+):** Required so `node --test tests/*.test.mjs` natively expands glob patterns across both Linux/macOS and Windows `cmd.exe`. *(Pinned during Iteration 2 CI setup after Node.js 20 failed glob expansion on Windows `cmd.exe`.)*
+- **No third-party npm packages required to run the test suite:** All 100 tests use Node.js built-in modules (`node:test`, `node:assert/strict`, `node:vm`, `node:fs`).
+- DeepSeek Harness (`@deepseek-ai/dsh`) runtime *(only required when loading the plugin inside a live DSH host; not needed for running automated verification checks)*.
 
-### Installation Steps
-1. Clone this repository:
+### Quick Setup & Test Execution (Reproducible on Windows, Linux, and macOS)
+1. Clone the repository:
    ```bash
    git clone https://github.com/zhangjinyuanx/project.git
    cd project
    ```
-2. Navigate into the plugin directory and install dependencies:
+2. Check Node.js version (`v22+`) and run static syntax/JSON validation:
+   ```bash
+   node -v
+   node --check agent-tool-limitation/index.mjs
+   node --check agent-tool-limitation/client.js
+   node -e "JSON.parse(require('fs').readFileSync('agent-tool-limitation/plugin.config.json', 'utf8')); console.log('plugin.config.json OK')"
+   ```
+3. Run the complete automated test suite (**100 tests across 8 suites**, zero `npm install` required):
    ```bash
    cd agent-tool-limitation
-   npm install
+   npm test
    ```
-3. Link or register the plugin with your DSH runtime:
+4. Verify tests left `plugin.config.json` completely clean:
    ```bash
-   npx @deepseek-ai/dsh plugin add ./agent-tool-limitation
+   cd ..
+   git diff --exit-code agent-tool-limitation/plugin.config.json
    ```
+
+*(Optional DSH Host Registration)* When installing into an active DeepSeek Harness environment:
+```bash
+npx @deepseek-ai/dsh plugin add ./agent-tool-limitation
+```
 
 ---
 
-## 4. Testing Instructions
+## 4. Test Suites & Quality Benchmarks
 
-### Verifying Tool Interception & Access Control
-1. **Benign Command Test (Allowed):**
-   - Prompt the agent to run an approved command on the whitelist (e.g., `git status` or `ls`).
-   - Expected Result: Command executes normally through the execution bridge.
-2. **Forbidden Command Test (Blocked):**
-   - Prompt the agent to execute an unapproved executable (e.g., `rm -rf /` or unauthorized network fetches).
-   - Expected Result: Interceptor blocks execution and returns an `AEGIS_ACCESS_DENIED` security error to the agent.
-3. **Anti-Tampering Test (Self-Protection):**
-   - Prompt the agent to overwrite or edit `plugin.config.json`.
-   - Expected Result: Target blacklist triggers immediately, rejecting the file modification call.
-4. **Dynamic Hot-Reloading Test:**
-   - Update an entry in `plugin.config.json` manually or via the GUI.
-   - Expected Result: Changes take effect immediately in the runtime cache without requiring a DSH server restart.
+| Suite File | Level & Focus | Tests | What It Verifies |
+| :--- | :--- | :---: | :--- |
+| `tests/acceptance-iter1.test.mjs` | Unit, Integration & Acceptance (`US-01`–`US-04`) | 27 | `EX-01`–`EX-23` specification examples + `EX-17b` dot-segment traversal regression + `apply(mockCtx)` & `loadConfigFile` fallback |
+| `tests/security-and-perf.test.mjs` | Acceptance Quality & Web API Integration (`PR #12`, `US-05`–`US-07`) | 63 | 26 malicious vs. 14 benign vectors (`100%` blocked / `0%` false positives), throughput (5,000 decisions) + 40 KB input latency + 100-entry bounded audit log, Web API `400`/`500`/`200` error paths |
+| `tests/ui-contract.test.mjs` | UI Contract via Node `vm` + minimal React hooks harness (`PB-03`/`PB-04`) | 10 | Command-name/regex validation, lowercase normalization, duplicate block, manual hot reload, three-state persistence feedback |
 
+---
+
+## 5. Dual-Platform Continuous Integration (`.github/workflows/ci.yml`)
+
+Every push to `main` and every Pull Request automatically runs on GitHub Actions across both **`ubuntu-latest`** and **`windows-latest`** (Node.js 22):
+1. `node --check` syntax checks on `index.mjs` and `client.js`
+2. JSON syntax validation on `plugin.config.json`
+3. Full `npm test` execution (100/100 tests)
+4. `git diff --exit-code agent-tool-limitation/plugin.config.json` cleanliness gate
+
+---
+
+## 6. Known Limitations
+
+1. **No Live DSH Browser Host in Standalone CI:** Because this repository packages the plugin independently of a full DeepSeek Harness server and browser host, DOM layout rendering in `client.js` is verified via `node --check` and a `node:vm` hooks harness (`ui-contract.test.mjs`) rather than headless browser E2E tests (e.g., Playwright).
+2. **Conservative Substring Matching on Protected Paths (Fail-Closed):** `findProtectedTarget()` intentionally uses substring containment against protected identifiers (e.g., `agent-tool-limitation`, `plugin.config.json`) to block indirect bypasses, which can conservatively deny benign commands whose arguments contain those exact strings (e.g., `grep agent-tool-limitation README.md`).
+3. **Unquoted Windows Paths Containing Spaces Without `.exe`:** Space-separated tokenization rejects unquoted Windows executable paths containing spaces that omit an `.exe`/`.cmd`/`.bat` suffix (failing closed with `COMMAND_NOT_IN_WHITELIST`), whereas quoted paths and `.exe` paths are normalized accurately.
