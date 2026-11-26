@@ -80,10 +80,11 @@ A security and capability control plugin for autonomous AI agents within the Dee
    git diff --exit-code agent-tool-limitation/plugin.config.json
    ```
 
-*(Optional DSH Host Registration)* When installing into an active DeepSeek Harness environment:
-```bash
-npx @deepseek-ai/dsh plugin add ./agent-tool-limitation
-```
+### Installing into DeepSeek Harness (Desktop / Web App)
+1. Open the **DeepSeek Harness** application.
+2. Select **Plugins** (`插件`) in the left sidebar and click **+ Add Plugin** (`+ 添加插件`) in the top-right corner.
+3. Copy and paste the absolute local path to the plugin directory inside this cloned repository (for example, `.../project/agent-tool-limitation`), or enter the GitHub repository URL, and click **Install** (`安装`).
+4. Open any workspace conversation and click the **🛡️ Tool Limitation Policy** (`工具限制策略`) button in the top toolbar or floating dock to view and manage live rules, test commands, and trigger hot reloads.
 
 ---
 
