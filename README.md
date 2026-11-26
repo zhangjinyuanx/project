@@ -8,26 +8,69 @@ A security and capability control plugin for autonomous AI agents within the Dee
 
 ---
 
-## 1. Key Capabilities
+## 1. Quick Start & Usage
 
-- **Core Interception Hook (`index.mjs`):** Intercepts `bash`, `web_fetch`, `read`, `write`, `edit`, and `plugin_manager` dispatches via `ctx.tools.guard`.
+### Prerequisites
+- **Node.js v22 or later (v22 LTS / v24+):** Required so `node --test tests/*.test.mjs` natively expands glob patterns across both Linux/macOS and Windows `cmd.exe`. *(Pinned during Iteration 2 CI setup after Node.js 20 failed glob expansion on Windows `cmd.exe`.)*
+- **No third-party npm packages required to run the test suite:** All 100 tests use Node.js built-in modules (`node:test`, `node:assert/strict`, `node:vm`, `node:fs`).
+- **DeepSeek Harness (Desktop / Web App):** Required when installing and using the live plugin GUI/runtime; not needed for running automated verification checks.
+
+### Installing into DeepSeek Harness (Recommended for Live Use)
+1. Clone this repository to your local machine:
+   ```bash
+   git clone https://github.com/zhangjinyuanx/project.git
+   cd project
+   ```
+2. Open the **DeepSeek Harness** desktop/web application.
+3. Click **Plugins** (`插件`) in the left sidebar, then click **+ Add Plugin** (`+ 添加插件`) in the top-right corner.
+4. Copy and paste the **absolute local path** to the plugin subdirectory inside this repository (for example, `.../project/agent-tool-limitation`) into the input box and click **Install** (`安装`).  
+   > **Important:** Because the plugin package files (`package.json`, `index.mjs`, `client.js`) reside inside the `agent-tool-limitation/` subdirectory rather than the repository root, install via the cloned **local subdirectory path** (`.../project/agent-tool-limitation`)—do **not** enter the top-level GitHub repository URL directly.
+5. Open any workspace conversation and click the **🛡️ Tool Limitation Policy** (`工具限制策略`) button in the top toolbar or floating dock to inspect rules, test commands, and trigger hot reloads.
+
+### Where to Configure Rules (Web GUI vs. Disk Configuration)
+- **Editable in the Web GUI (`client.js`):**
+  - Toggle the global guard switch (`enabled`) and shell chaining protection (`blockShellChaining`).
+  - Add tools/commands and configure per-command whitelist rules (`commandRules`: `allowed`, `argWhitelistEnabled`, and `allowedArgs`), run interactive command tests, and click **🔄 热重载策略 (Hot Reload)**.
+- **Read-Only in the Web GUI (Edit `agent-tool-limitation/plugin.config.json` on Disk):**
+  - **`mode`** (`"whitelist"` vs. `"blacklist"`), **`blockedCommands`**, and **`forbiddenPaths`** are displayed read-only in the GUI **Self-Protection** summary card (`Section 4`). To change them, edit `agent-tool-limitation/plugin.config.json` directly on disk and click **Hot Reload** (or rely on automatic `fs.watch` hot-reloading without restarting DSH).
+- **Hardcoded Anti-Tampering Locks (`agent-tool-limitation/index.mjs`):**
+  - Core self-protection paths (`DEFAULT_ACCESS_POLICY.protectedConfigPaths`: `plugin.config.json`, `cordis.yml`, `cordis.patch.yml`, `agent-tool-limitation`, `.dsh/profiles`, and plugin API routes) are enforced in source code so autonomous agents cannot disable or overwrite the plugin.
+
+### Running Automated Verification Tests (Windows, Linux & macOS)
+Run all static checks and **100 zero-dependency tests across 8 suites** from the cloned repository root (no `npm install` needed):
+```bash
+node -v
+node --check agent-tool-limitation/index.mjs
+node --check agent-tool-limitation/client.js
+node -e "JSON.parse(require('fs').readFileSync('agent-tool-limitation/plugin.config.json', 'utf8')); console.log('plugin.config.json OK')"
+cd agent-tool-limitation
+npm test
+cd ..
+git diff --exit-code agent-tool-limitation/plugin.config.json
+```
+
+---
+
+## 2. Key Capabilities & Architecture
+
+- **Core Interception Hook (`index.mjs`):** Intercepts `bash`, `web_fetch`, `read`, `write`, `edit`, and `plugin_manager` dispatches via `ctx.tools.guard` before host execution, returning `AEGIS_ACCESS_DENIED` on blocked calls without crashing DSH.
 - **Cross-Platform Path & Binary Guard:**
   - `normalizeExecutableName(rawToken)`: Normalizes quoted/unquoted Unix (`/`) and Windows (`\`) paths and strips `.exe`/`.cmd`/`.bat` suffixes before whitelist/blacklist evaluation.
   - `findProtectedTarget(input, forbiddenPaths)`: Applies dot-segment resolution (`path.posix.normalize`) and case-insensitive separator normalization (`CONFIG_TAMPER_BLOCKED` before `SENSITIVE_PATH_BLOCKED`) to stop agents tampering with `plugin.config.json`, plugin sources, or `.dsh/profiles`.
 - **Non-Destructive Fail-Safe Config & Schema Validation:**
-  - `loadConfigFile(fallbackPolicy)` preserves malformed `plugin.config.json` files on disk and retains the active fallback/last-known-good policy in memory.
-  - `validatePolicyPatch(patch)` validates `mode`, command names (rejecting whitespace, shell metacharacters, and prototype keys), and `/.../` regular expressions before mutating memory or disk (`HTTP 400` on invalid input; `HTTP 500` with `inMemoryUpdated: true, persisted: false` on write failure).
-- **Embedded Web GUI (`client.js`):** Visual rule editor with client-side command/regex validation, three-state persistence feedback (persisted vs. memory-only warning vs. error), a manual Hot Reload button with timestamp, and a read-only blacklist/self-protection summary card.
+  - `loadConfigFile(fallbackPolicy)` preserves malformed `plugin.config.json` files on disk and retains the active fallback/last-known-good policy in memory across cold start and hot reloads.
+  - `validatePolicyPatch(patch)` validates `mode`, command names (rejecting whitespace, shell metacharacters, and prototype keys), and `/.../` regular expressions before mutating memory or disk (`HTTP 400` on invalid input; `HTTP 500` with `inMemoryUpdated: true, persisted: false` on disk write failure).
+- **Embedded Web GUI (`client.js`):** Visual whitelist rule editor with client-side command/regex validation, three-state persistence feedback (persisted vs. memory-only warning vs. error), manual Hot Reload button with timestamp, and a read-only blacklist/self-protection summary card.
 
 ---
 
-## 2. Directory Structure
+## 3. Directory Structure
 
 ```text
 ├── .github/
 │   ├── pull_request_template.md              # Standardized PR verification checklist
 │   └── workflows/ci.yml                      # Dual-platform CI (ubuntu-latest & windows-latest, Node 22)
-├── agent-tool-limitation/                    # Plugin package directory
+├── agent-tool-limitation/                    # Plugin package directory (paste this path in DSH)
 │   ├── client.js                             # Embedded React Web GUI client bundle
 │   ├── cordis.patch.yml                      # Cordis framework patch configuration
 │   ├── index.mjs                             # Core interception engine, config loader & Web API
@@ -46,45 +89,6 @@ A security and capability control plugin for autonomous AI agents within the Dee
 ├── .gitignore
 └── README.md
 ```
-
----
-
-## 3. Prerequisites & Reproducible Setup
-
-### Prerequisites
-- **Node.js v22 or later (v22 LTS / v24+):** Required so `node --test tests/*.test.mjs` natively expands glob patterns across both Linux/macOS and Windows `cmd.exe`. *(Pinned during Iteration 2 CI setup after Node.js 20 failed glob expansion on Windows `cmd.exe`.)*
-- **No third-party npm packages required to run the test suite:** All 100 tests use Node.js built-in modules (`node:test`, `node:assert/strict`, `node:vm`, `node:fs`).
-- DeepSeek Harness (`@deepseek-ai/dsh`) runtime *(only required when loading the plugin inside a live DSH host; not needed for running automated verification checks)*.
-
-### Quick Setup & Test Execution (Reproducible on Windows, Linux, and macOS)
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/zhangjinyuanx/project.git
-   cd project
-   ```
-2. Check Node.js version (`v22+`) and run static syntax/JSON validation:
-   ```bash
-   node -v
-   node --check agent-tool-limitation/index.mjs
-   node --check agent-tool-limitation/client.js
-   node -e "JSON.parse(require('fs').readFileSync('agent-tool-limitation/plugin.config.json', 'utf8')); console.log('plugin.config.json OK')"
-   ```
-3. Run the complete automated test suite (**100 tests across 8 suites**, zero `npm install` required):
-   ```bash
-   cd agent-tool-limitation
-   npm test
-   ```
-4. Verify tests left `plugin.config.json` completely clean:
-   ```bash
-   cd ..
-   git diff --exit-code agent-tool-limitation/plugin.config.json
-   ```
-
-### Installing into DeepSeek Harness (Desktop / Web App)
-1. Open the **DeepSeek Harness** application.
-2. Select **Plugins** (`插件`) in the left sidebar and click **+ Add Plugin** (`+ 添加插件`) in the top-right corner.
-3. Copy and paste the absolute local path to the plugin directory inside this cloned repository (for example, `.../project/agent-tool-limitation`), or enter the GitHub repository URL, and click **Install** (`安装`).
-4. Open any workspace conversation and click the **🛡️ Tool Limitation Policy** (`工具限制策略`) button in the top toolbar or floating dock to view and manage live rules, test commands, and trigger hot reloads.
 
 ---
 
@@ -110,6 +114,6 @@ Every push to `main` and every Pull Request automatically runs on GitHub Actions
 
 ## 6. Known Limitations
 
-1. **No Live DSH Browser Host in Standalone CI:** Because this repository packages the plugin independently of a full DeepSeek Harness server and browser host, DOM layout rendering in `client.js` is verified via `node --check` and a `node:vm` hooks harness (`ui-contract.test.mjs`) rather than headless browser E2E tests (e.g., Playwright).
+1. **No Live Browser E2E Verification Against DeepSeek Harness:** Because standalone CI has no live DSH server or headless browser runner, DOM layout rendering in `client.js` is verified via `node --check` and a `node:vm` hooks harness (`ui-contract.test.mjs`) rather than headless browser E2E tests (e.g., Playwright).
 2. **Conservative Substring Matching on Protected Paths (Fail-Closed):** `findProtectedTarget()` intentionally uses substring containment against protected identifiers (e.g., `agent-tool-limitation`, `plugin.config.json`) to block indirect bypasses, which can conservatively deny benign commands whose arguments contain those exact strings (e.g., `grep agent-tool-limitation README.md`).
 3. **Unquoted Windows Paths Containing Spaces Without `.exe`:** Space-separated tokenization rejects unquoted Windows executable paths containing spaces that omit an `.exe`/`.cmd`/`.bat` suffix (failing closed with `COMMAND_NOT_IN_WHITELIST`), whereas quoted paths and `.exe` paths are normalized accurately.
